@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+trading.log
+trading_state.json

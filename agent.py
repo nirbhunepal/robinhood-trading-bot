@@ -58,20 +58,65 @@ log = logging.getLogger("robinhood-bot")
 # reachability check even when its OAuth token has actually expired and
 # real tool calls are being refused. The only reliable signal we've found
 # is Claude's own response text when it can't complete a tool call.
+#
+# This is distinct from the CLI itself being logged out of the Anthropic
+# account (checked separately below) — the two need different fixes, so
+# they must not share a pattern list or the wrong remedy gets logged.
 MCP_AUTH_FAILURE_PATTERNS = (
     "needs authorization",
     "requires authorization",
     "authorization before",
     "needs to be authorized",
     "oauth flow",
-    "not logged in",
     "non-interactive session",
+)
+
+# Emitted directly by the `claude` CLI (not by Claude's own response text)
+# when its own session with Anthropic has expired or been logged out.
+CLI_LOGIN_FAILURE_PATTERNS = (
+    "not logged in",
+    "please run /login",
 )
 
 
 def looks_like_mcp_auth_failure(text: str) -> bool:
     lowered = (text or "").lower()
     return any(pattern in lowered for pattern in MCP_AUTH_FAILURE_PATTERNS)
+
+
+def looks_like_cli_login_failure(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(pattern in lowered for pattern in CLI_LOGIN_FAILURE_PATTERNS)
+
+
+def check_and_notify_auth_failure(now_et, *texts: str) -> None:
+    """Inspect subprocess output for either failure mode and log/notify with
+    the correct remedy. Checked in this order because a CLI login failure
+    also happens to make Claude's own response text unavailable, so there's
+    nothing for looks_like_mcp_auth_failure to false-positive on — but if
+    that ever changes, the CLI check should still win since it's the more
+    specific diagnosis (the process never got far enough to touch the MCP
+    server at all).
+    """
+    combined = "\n".join(texts)
+    if looks_like_cli_login_failure(combined):
+        log_and_print(
+            f"[{now_et}] CLI LOGIN FAILURE: the `claude` CLI itself is logged out of "
+            f"the Anthropic account (no trades were evaluated). Run `claude /login` to fix."
+        )
+        notify_mac(
+            "Robinhood Bot: Claude Code logged out",
+            "The claude CLI needs re-login — run `claude /login`.",
+        )
+    elif looks_like_mcp_auth_failure(combined):
+        log_and_print(
+            f"[{now_et}] MCP AUTH FAILURE: robinhood-trading rejected tool calls this run "
+            f"(no trades were evaluated). Run `claude mcp login robinhood-trading` to fix."
+        )
+        notify_mac(
+            "Robinhood Bot: auth expired",
+            "robinhood-trading needs re-login — run `claude mcp login robinhood-trading`.",
+        )
 
 
 def notify_mac(title: str, message: str) -> None:
@@ -221,9 +266,13 @@ if scan_universe:
     step3 = (
         f"Step 3: If I currently hold fewer than {config['max_open_positions']} open positions "
         f"and have at least ${config['max_position_size']} in available cash, look for candidates "
-        f"beyond my usual watchlist. If this MCP server exposes any tool for market movers, top "
-        f"gainers, or a general screener, use it to pull candidates; otherwise fall back to "
-        f"checking [{tickers_str}]. Only consider a candidate if its share price is at least "
+        f"beyond my usual watchlist. Run a live, ad-hoc screen with preview_scan (build the filter "
+        f"with get_scanner_filter_specs) for market movers/top gainers — this is the actual "
+        f"screener and is always available; use it to pull candidates. Do not use get_scans for "
+        f"this — that only lists my saved/pre-configured scans and will often come back empty, "
+        f"which does NOT mean no screener is available. Only fall back to checking "
+        f"[{tickers_str}] if preview_scan itself is genuinely unavailable on this server. Only "
+        f"consider a candidate if its share price is at least "
         f"${min_price} and its average daily volume is at least {min_volume} shares — skip "
         f"penny stocks, illiquid names, and anything OTC. For any candidate trading above its "
         f"daily VWAP, use web search to check for recent news (last 24-48 hours) on that ticker "
@@ -291,15 +340,7 @@ try:
     if result.stderr:
         log.info("stderr: %s", result.stderr)
 
-    if looks_like_mcp_auth_failure(result.stdout):
-        log_and_print(
-            f"[{now_et}] MCP AUTH FAILURE: robinhood-trading rejected tool calls this run "
-            f"(no trades were evaluated). Run `claude mcp login robinhood-trading` to fix."
-        )
-        notify_mac(
-            "Robinhood Bot: auth expired",
-            "robinhood-trading needs re-login — run `claude mcp login robinhood-trading`.",
-        )
+    check_and_notify_auth_failure(now_et, result.stdout)
 
     # 6. Parse the trailing JSON block and update local trade-tracking state.
     matches = re.findall(r"```json\s*(\{.*?\})\s*```", result.stdout, re.DOTALL)
@@ -347,8 +388,4 @@ except subprocess.CalledProcessError as e:
         f"stdout: {e.stdout}\n"
         f"stderr: {e.stderr}"
     )
-    if looks_like_mcp_auth_failure(e.stdout) or looks_like_mcp_auth_failure(e.stderr):
-        notify_mac(
-            "Robinhood Bot: auth expired",
-            "robinhood-trading needs re-login — run `claude mcp login robinhood-trading`.",
-        )
+    check_and_notify_auth_failure(now_et, e.stdout or "", e.stderr or "")
