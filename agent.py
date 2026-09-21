@@ -54,6 +54,33 @@ logging.basicConfig(
 )
 log = logging.getLogger("robinhood-bot")
 
+# `claude mcp list`/`get` can report a server as "Connected" as a shallow
+# reachability check even when its OAuth token has actually expired and
+# real tool calls are being refused. The only reliable signal we've found
+# is Claude's own response text when it can't complete a tool call.
+MCP_AUTH_FAILURE_PATTERNS = (
+    "needs authorization",
+    "requires authorization",
+    "authorization before",
+    "needs to be authorized",
+    "oauth flow",
+    "not logged in",
+    "non-interactive session",
+)
+
+
+def looks_like_mcp_auth_failure(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(pattern in lowered for pattern in MCP_AUTH_FAILURE_PATTERNS)
+
+
+def notify_mac(title: str, message: str) -> None:
+    script = f'display notification {json.dumps(message)} with title {json.dumps(title)} sound name "Basso"'
+    try:
+        subprocess.run(["osascript", "-e", script], capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
 
 def log_and_print(msg: str) -> None:
     print(msg)
@@ -264,6 +291,16 @@ try:
     if result.stderr:
         log.info("stderr: %s", result.stderr)
 
+    if looks_like_mcp_auth_failure(result.stdout):
+        log_and_print(
+            f"[{now_et}] MCP AUTH FAILURE: robinhood-trading rejected tool calls this run "
+            f"(no trades were evaluated). Run `claude mcp login robinhood-trading` to fix."
+        )
+        notify_mac(
+            "Robinhood Bot: auth expired",
+            "robinhood-trading needs re-login — run `claude mcp login robinhood-trading`.",
+        )
+
     # 6. Parse the trailing JSON block and update local trade-tracking state.
     matches = re.findall(r"```json\s*(\{.*?\})\s*```", result.stdout, re.DOTALL)
     if not matches:
@@ -310,3 +347,8 @@ except subprocess.CalledProcessError as e:
         f"stdout: {e.stdout}\n"
         f"stderr: {e.stderr}"
     )
+    if looks_like_mcp_auth_failure(e.stdout) or looks_like_mcp_auth_failure(e.stderr):
+        notify_mac(
+            "Robinhood Bot: auth expired",
+            "robinhood-trading needs re-login — run `claude mcp login robinhood-trading`.",
+        )
