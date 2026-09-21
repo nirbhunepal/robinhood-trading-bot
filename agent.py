@@ -305,4 +305,8 @@ try:
                 "daily_realized_pl": daily_realized_pl,
             })
 except subprocess.CalledProcessError as e:
-    log_and_print(f"Execution error: {e.stderr}")
+    log_and_print(
+        f"Execution error (exit code {e.returncode}):\n"
+        f"stdout: {e.stdout}\n"
+        f"stderr: {e.stderr}"
+    )
