@@ -1,6 +1,9 @@
 import json
 import logging
+import os
+import pwd
 import re
+import shutil
 import subprocess
 import tempfile
 from datetime import date, datetime, timedelta
@@ -12,6 +15,37 @@ BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "trading_config.json"
 LOG_PATH = BASE_DIR / "trading.log"
 STATE_PATH = BASE_DIR / "trading_state.json"
+
+# cron runs with a minimal PATH that may not include the claude binary's
+# install location, so resolve it explicitly rather than relying on PATH.
+CLAUDE_BIN = (
+    shutil.which("claude")
+    or next(
+        (p for p in ("/usr/local/bin/claude", "/opt/homebrew/bin/claude") if Path(p).exists()),
+        "claude",
+    )
+)
+
+
+def cron_safe_env() -> dict:
+    """Build a subprocess env that works even under cron's minimal
+    environment: cron sets HOME/LOGNAME/SHELL/PATH but not USER, and the
+    claude CLI needs USER to locate its stored auth credentials. It also
+    may not include /usr/local/bin or /opt/homebrew/bin on PATH.
+    """
+    env = os.environ.copy()
+    if not env.get("USER"):
+        try:
+            env["USER"] = pwd.getpwuid(os.getuid()).pw_name
+        except (KeyError, OSError):
+            pass
+    path_parts = [p for p in env.get("PATH", "").split(":") if p]
+    for extra in ("/usr/local/bin", "/opt/homebrew/bin"):
+        if extra not in path_parts:
+            path_parts.append(extra)
+    env["PATH"] = ":".join(path_parts)
+    return env
+
 
 logging.basicConfig(
     filename=LOG_PATH,
@@ -219,10 +253,12 @@ log_and_print(f"[{now_et}] Market hours valid. Activating Claude execution layer
 # 5. Run it -----------------------------------------------------------------
 try:
     result = subprocess.run(
-        ["claude", "-p", prompt],
+        [CLAUDE_BIN, "-p", prompt],
         capture_output=True,
         text=True,
         check=True,
+        env=cron_safe_env(),
+        cwd=BASE_DIR,
     )
     log_and_print(result.stdout)
     if result.stderr:
