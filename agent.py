@@ -26,6 +26,17 @@ CLAUDE_BIN = (
     )
 )
 
+# cron-spawned processes run outside the interactive GUI/login session, so
+# the claude CLI's Keychain-backed session credentials are sometimes
+# unreadable there even though the same account is logged in everywhere
+# else (confirmed: cron-triggered runs failed with "Not logged in" while
+# manual runs in between succeeded). A long-lived CLAUDE_CODE_OAUTH_TOKEN
+# (from `claude setup-token`) sidesteps the Keychain/session dependency
+# entirely. It's kept in its own file rather than a crontab env line
+# because crontab's line-based syntax treats characters like `%` and `#`
+# specially and can silently mangle a token that happens to contain one.
+CLI_TOKEN_PATH = Path.home() / ".robinhood_bot_claude_token"
+
 
 def cron_safe_env() -> dict:
     """Build a subprocess env that works even under cron's minimal
@@ -44,6 +55,14 @@ def cron_safe_env() -> dict:
         if extra not in path_parts:
             path_parts.append(extra)
     env["PATH"] = ":".join(path_parts)
+    if CLI_TOKEN_PATH.exists():
+        # A pasted token can land split across multiple physical lines if
+        # the terminal wraps long pastes without bracketed-paste support,
+        # so join on all whitespace rather than just stripping the ends —
+        # the token itself never legitimately contains whitespace.
+        token = "".join(CLI_TOKEN_PATH.read_text().split())
+        if token:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = token
     return env
 
 
