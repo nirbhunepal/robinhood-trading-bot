@@ -1,10 +1,10 @@
 {
-  "max_position_size": 5.00,
-  "max_open_positions": 4,
+  "max_position_size": 15.00,
+  "max_open_positions": 5,
   "stop_loss_pct": 0.02,
   "profit_target_pct": 0.05,
   "max_day_trades_per_5_days": 3,
-  "max_daily_loss": 1.00,
+  "max_daily_loss": 3.00,
   "scan_universe": true,
   "min_share_price": 5.0,
   "min_avg_daily_volume": 500000,
